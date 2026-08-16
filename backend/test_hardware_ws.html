@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Prueba WebSocket - Hardware en vivo</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #171E33;
+            color: #fff;
+            padding: 20px;
+        }
+        
+        h2 {
+            color: #3D5AFE;
+        }
+        
+        #status {
+            padding: 8px;
+            border-radius: 6px;
+            display: inline-block;
+            margin-bottom: 16px;
+        }
+        
+        .connected {
+            background: #16a766;
+        }
+        
+        .disconnected {
+            background: #cc3a21;
+        }
+        
+        pre {
+            background: #20293F;
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>Prueba: WS /api/v1/hardware/live</h2>
+    <div id="status" class="disconnected">Desconectado</div>
+    <pre id="output">Esperando conexión...</pre>
+
+    <script>
+        const statusEl = document.getElementById("status");
+        const outputEl = document.getElementById("output");
+
+        // Ajusta el puerto si tu servidor corre en uno distinto a 8000
+        const socket = new WebSocket("ws://127.0.0.1:8000/api/v1/processes/live");
+
+        socket.onopen = () => {
+            statusEl.textContent = "Conectado";
+            statusEl.className = "connected";
+        };
+
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            outputEl.textContent = JSON.stringify(data, null, 2);
+        };
+
+        socket.onclose = () => {
+            statusEl.textContent = "Desconectado";
+            statusEl.className = "disconnected";
+        };
+
+        socket.onerror = (err) => {
+            outputEl.textContent = "Error de conexión: " + JSON.stringify(err);
+        };
+    </script>
+</body>
+
+</html>
