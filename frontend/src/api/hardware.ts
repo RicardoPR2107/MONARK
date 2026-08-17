@@ -23,6 +23,26 @@ export interface APIResponse<T> {
   timestamp: string;
 }
 
+export interface HardwareLiveData {
+  cpu: {
+    overall_percentage: number;
+    cores: { core_id: number; percentage: number }[];
+    core_count_physical: number;
+    core_count_logical: number;
+    frequency_mhz: number | null;
+  };
+  ram: {
+    total_bytes: number;
+    used_bytes: number;
+    available_bytes: number;
+    used_percentage: number;
+  };
+  disk_io: {
+    read_speed_bytes_per_sec: number;
+    write_speed_bytes_per_sec: number;
+  };
+}
+
 export async function getHardwareStatus(): Promise<
   APIResponse<HardwareStatusData>
 > {

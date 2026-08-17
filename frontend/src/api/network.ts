@@ -27,3 +27,63 @@ export async function getNetworkStatus(): Promise<
   const response = await fetch(`${API_BASE}/network/status`);
   return response.json();
 }
+
+export interface SpeedtestData {
+  download_mbps: number | null;
+  upload_mbps: number | null;
+  ping_ms: number;
+  jitter_ms: number | null;
+  server_used: string;
+  tested_at: string;
+}
+
+export async function runSpeedtest(
+  test_type: "full" | "ping_only" = "full",
+): Promise<APIResponse<SpeedtestData>> {
+  const response = await fetch(`${API_BASE}/network/speedtest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ test_type }),
+  });
+  return response.json();
+}
+
+export interface PortInfo {
+  port: number;
+  protocol: string;
+  status: string;
+  process_name: string | null;
+  pid: number | null;
+  local_address: string;
+}
+
+export async function getNetworkPorts(): Promise<
+  APIResponse<{
+    total_open_ports: number;
+    ports: PortInfo[];
+    measured_at: string;
+  }>
+> {
+  const response = await fetch(`${API_BASE}/network/ports`);
+  return response.json();
+}
+
+export interface DeviceInfo {
+  ip_address: string;
+  mac_address: string;
+  hostname: string | null;
+  vendor: string | null;
+  is_gateway: boolean;
+  last_seen: string;
+}
+
+export async function getNetworkDevices(): Promise<
+  APIResponse<{
+    total_devices: number;
+    devices: DeviceInfo[];
+    scanned_at: string;
+  }>
+> {
+  const response = await fetch(`${API_BASE}/network/devices`);
+  return response.json();
+}

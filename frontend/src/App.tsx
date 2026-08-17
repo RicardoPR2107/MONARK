@@ -3,6 +3,8 @@
 import { HashRouter, Routes, Route } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import Archivos from "./pages/Archivos";
+import Hardware from "./pages/Hardware";
+import Red from "./pages/Red";
 import "./App.css";
 
 function App() {
@@ -11,7 +13,9 @@ function App() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/archivos" element={<Archivos />} />
-        {/* Próximas rutas: /hardware, /red, /papelera */}
+        <Route path="/hardware" element={<Hardware />} />
+        <Route path="/red" element={<Red />} />
+        {/* Próxima ruta: /papelera */}
       </Routes>
     </HashRouter>
   );

@@ -1,7 +1,6 @@
 // src/pages/Archivos.tsx
-// currentPath === null representa la vista raíz "Este equipo" (lista de unidades,
-// reutilizando el mismo getDiskList() del Dashboard). Al hacer clic en una unidad,
-// se navega dentro de ella con listFolder(), igual que entre carpetas normales.
+// currentPath === null representa la vista raíz "Este equipo" (lista de unidades).
+// Cada fila tiene un botón de acciones (⋮) con: Renombrar, Mover, Convertir, Eliminar.
 
 import { useEffect, useState } from "react";
 import Sidebar from "../components/Sidebar";
@@ -9,11 +8,16 @@ import {
   listFolder,
   createFolder,
   createFile,
+  deleteItem,
   FileListItem,
 } from "../api/files";
 import { getDiskList, DriveInfo } from "../api/disk";
 import { FolderIcon, ChipIcon } from "../components/icons";
 import CreateItemModal from "../components/CreateItemModal";
+import RenameModal from "../components/RenameModal";
+import MoveModal from "../components/MoveModal";
+import ConvertModal from "../components/ConvertModal";
+import ConfirmModal from "../components/ConfirmModal";
 
 function formatGB(bytes: number | null): string {
   if (bytes === null) return "—";
@@ -29,8 +33,15 @@ function formatDate(iso: string): string {
   });
 }
 
+type ActiveModal =
+  | { type: "create"; kind: "folder" | "file" }
+  | { type: "rename"; item: FileListItem }
+  | { type: "move"; item: FileListItem }
+  | { type: "convert"; item: FileListItem }
+  | { type: "delete"; item: FileListItem }
+  | null;
+
 export default function Archivos() {
-  // null = vista raíz "Este equipo"
   const [currentPath, setCurrentPath] = useState<string | null>(null);
 
   const [drives, setDrives] = useState<DriveInfo[]>([]);
@@ -39,7 +50,9 @@ export default function Archivos() {
     "loading",
   );
   const [errorMsg, setErrorMsg] = useState("");
-  const [modalOpen, setModalOpen] = useState<"folder" | "file" | null>(null);
+
+  const [activeModal, setActiveModal] = useState<ActiveModal>(null);
+  const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
 
   function reloadFolder() {
     if (currentPath === null) return;
@@ -52,7 +65,6 @@ export default function Archivos() {
     setStatus("loading");
 
     if (currentPath === null) {
-      // Vista raíz: lista de unidades
       getDiskList()
         .then((res) => {
           if (res.success && res.data) {
@@ -68,7 +80,6 @@ export default function Archivos() {
           setStatus("error");
         });
     } else {
-      // Vista de carpeta normal
       listFolder(currentPath)
         .then((res) => {
           if (res.success && res.data) {
@@ -96,7 +107,16 @@ export default function Archivos() {
     );
   }
 
-  // Breadcrumb: "Este equipo" siempre primero, seguido de los segmentos de la ruta actual
+  function fullPathOf(item: FileListItem): string {
+    const base = currentPath!.endsWith("/") ? currentPath! : currentPath! + "/";
+    return base + item.name;
+  }
+
+  async function handleDelete(item: FileListItem) {
+    const res = await deleteItem(fullPathOf(item));
+    if (res.success) reloadFolder();
+  }
+
   const segments = currentPath ? currentPath.split("/").filter(Boolean) : [];
 
   return (
@@ -142,13 +162,15 @@ export default function Archivos() {
           {currentPath !== null && (
             <div className="flex gap-3">
               <button
-                onClick={() => setModalOpen("folder")}
+                onClick={() =>
+                  setActiveModal({ type: "create", kind: "folder" })
+                }
                 className="bg-accent px-4 py-2.5 rounded-lg text-sm font-medium"
               >
                 + Carpeta
               </button>
               <button
-                onClick={() => setModalOpen("file")}
+                onClick={() => setActiveModal({ type: "create", kind: "file" })}
                 className="bg-accent px-4 py-2.5 rounded-lg text-sm font-medium"
               >
                 + Archivo
@@ -164,7 +186,6 @@ export default function Archivos() {
           <span className="text-red-400 text-sm">{errorMsg}</span>
         )}
 
-        {/* Vista raíz: tarjetas de unidades */}
         {status === "ready" && currentPath === null && (
           <div className="flex gap-6 flex-wrap">
             {drives.map((d) => (
@@ -183,7 +204,6 @@ export default function Archivos() {
           </div>
         )}
 
-        {/* Vista de carpeta: tabla de contenido */}
         {status === "ready" && currentPath !== null && (
           <div className="flex flex-col gap-1">
             <div className="flex px-5 py-2 text-xs font-medium text-text-secondary">
@@ -191,6 +211,7 @@ export default function Archivos() {
               <span className="flex-1">Tipo</span>
               <span className="flex-1">Tamaño</span>
               <span className="flex-1">Modificado</span>
+              <span className="w-8" />
             </div>
 
             {items.length === 0 && (
@@ -202,14 +223,16 @@ export default function Archivos() {
             {items.map((item) => (
               <div
                 key={item.name}
-                onClick={() => item.type === "folder" && openFolder(item.name)}
-                className={`flex items-center bg-surface rounded-lg px-5 py-3.5 ${
-                  item.type === "folder"
-                    ? "cursor-pointer hover:bg-white/5"
-                    : ""
-                }`}
+                className="flex items-center bg-surface rounded-lg px-5 py-3.5 relative"
               >
-                <span className="flex-2 flex items-center gap-2 font-medium">
+                <span
+                  onClick={() =>
+                    item.type === "folder" && openFolder(item.name)
+                  }
+                  className={`flex-2 flex items-center gap-2 font-medium ${
+                    item.type === "folder" ? "cursor-pointer" : ""
+                  }`}
+                >
                   {item.type === "folder" && (
                     <FolderIcon className="w-4 h-4 text-accent shrink-0" />
                   )}
@@ -226,21 +249,123 @@ export default function Archivos() {
                 <span className="flex-1 text-sm text-text-secondary">
                   {formatDate(item.modified_at)}
                 </span>
+
+                <div className="w-8 flex justify-end">
+                  <button
+                    onClick={() =>
+                      setMenuOpenFor(
+                        menuOpenFor === item.name ? null : item.name,
+                      )
+                    }
+                    className="text-text-secondary hover:text-text-primary px-2"
+                  >
+                    ⋮
+                  </button>
+                </div>
+
+                {menuOpenFor === item.name && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setMenuOpenFor(null)}
+                    />
+                    <div className="absolute right-5 top-12 bg-background border border-white/10 rounded-lg shadow-lg z-50 py-1 w-40">
+                      <button
+                        onClick={() => {
+                          setActiveModal({ type: "rename", item });
+                          setMenuOpenFor(null);
+                        }}
+                        className="w-full text-left px-4 py-2 text-sm text-text-primary hover:bg-white/5"
+                      >
+                        Renombrar
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActiveModal({ type: "move", item });
+                          setMenuOpenFor(null);
+                        }}
+                        className="w-full text-left px-4 py-2 text-sm text-text-primary hover:bg-white/5"
+                      >
+                        Mover
+                      </button>
+                      {item.type === "file" && (
+                        <button
+                          onClick={() => {
+                            setActiveModal({ type: "convert", item });
+                            setMenuOpenFor(null);
+                          }}
+                          className="w-full text-left px-4 py-2 text-sm text-text-primary hover:bg-white/5"
+                        >
+                          Convertir
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          setActiveModal({ type: "delete", item });
+                          setMenuOpenFor(null);
+                        }}
+                        className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-white/5"
+                      >
+                        Eliminar
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             ))}
           </div>
         )}
       </main>
 
-      {modalOpen && currentPath !== null && (
+      {activeModal?.type === "create" && currentPath !== null && (
         <CreateItemModal
-          type={modalOpen}
+          type={activeModal.kind}
           currentPath={currentPath}
-          onClose={() => setModalOpen(null)}
+          onClose={() => setActiveModal(null)}
           onCreated={reloadFolder}
           createFn={
-            modalOpen === "folder" ? createFolder : (p, n) => createFile(p, n)
+            activeModal.kind === "folder"
+              ? createFolder
+              : (p, n) => createFile(p, n)
           }
+        />
+      )}
+
+      {activeModal?.type === "rename" && (
+        <RenameModal
+          currentFullPath={fullPathOf(activeModal.item)}
+          currentName={activeModal.item.name}
+          onClose={() => setActiveModal(null)}
+          onDone={reloadFolder}
+        />
+      )}
+
+      {activeModal?.type === "move" && (
+        <MoveModal
+          currentFullPath={fullPathOf(activeModal.item)}
+          itemName={activeModal.item.name}
+          onClose={() => setActiveModal(null)}
+          onDone={reloadFolder}
+        />
+      )}
+
+      {activeModal?.type === "convert" && (
+        <ConvertModal
+          currentFullPath={fullPathOf(activeModal.item)}
+          itemName={activeModal.item.name}
+          onClose={() => setActiveModal(null)}
+          onDone={reloadFolder}
+        />
+      )}
+
+      {activeModal?.type === "delete" && (
+        <ConfirmModal
+          title="Eliminar"
+          message={`"${activeModal.item.name}" se moverá a la papelera. ¿Continuar?`}
+          confirmLabel="Eliminar"
+          danger
+          onConfirm={() => handleDelete(activeModal.item)}
+          onClose={() => setActiveModal(null)}
         />
       )}
     </div>
