@@ -7,7 +7,7 @@ interface Props {
   currentFullPath: string;
   currentName: string;
   onClose: () => void;
-  onDone: () => void;
+  onDone: (newName: string) => void;
 }
 
 export default function RenameModal({
@@ -27,7 +27,7 @@ export default function RenameModal({
     const res = await renameItem(currentFullPath, name.trim());
     setLoading(false);
     if (res.success) {
-      onDone();
+      onDone(name.trim());
       onClose();
     } else {
       setError(res.error?.message || "Ocurrió un error.");

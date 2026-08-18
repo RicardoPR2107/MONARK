@@ -9,7 +9,7 @@ interface Props {
   currentFullPath: string;
   itemName: string;
   onClose: () => void;
-  onDone: () => void;
+  onDone: (result: { name: string; mime: string }) => void;
 }
 
 const TARGET_OPTIONS = [
@@ -41,8 +41,12 @@ export default function ConvertModal({
       newName.trim() || undefined,
     );
     setLoading(false);
-    if (res.success) {
-      onDone();
+    if (res.success && res.data) {
+      // El nombre real del archivo creado (por si el backend generó uno
+      // automático, ej. "archivo_converted") viene en converted_path.
+      const createdName =
+        res.data.converted_path.split(/[/\\]/).pop() || newName.trim();
+      onDone({ name: createdName, mime: res.data.new_type });
       onClose();
     } else {
       setError(res.error?.message || "Ocurrió un error.");

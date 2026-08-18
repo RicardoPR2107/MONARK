@@ -114,7 +114,11 @@ export default function Archivos() {
 
   async function handleDelete(item: FileListItem) {
     const res = await deleteItem(fullPathOf(item));
-    if (res.success) reloadFolder();
+    if (res.success) {
+      // Actualización optimista: lo quitamos de la lista al instante,
+      // sin esperar una nueva petición completa al backend.
+      setItems((prev) => prev.filter((i) => i.name !== item.name));
+    }
   }
 
   const segments = currentPath ? currentPath.split("/").filter(Boolean) : [];
@@ -336,7 +340,14 @@ export default function Archivos() {
           currentFullPath={fullPathOf(activeModal.item)}
           currentName={activeModal.item.name}
           onClose={() => setActiveModal(null)}
-          onDone={reloadFolder}
+          onDone={(newName) => {
+            const oldName = activeModal.item.name;
+            setItems((prev) =>
+              prev.map((i) =>
+                i.name === oldName ? { ...i, name: newName } : i,
+              ),
+            );
+          }}
         />
       )}
 
@@ -345,7 +356,11 @@ export default function Archivos() {
           currentFullPath={fullPathOf(activeModal.item)}
           itemName={activeModal.item.name}
           onClose={() => setActiveModal(null)}
-          onDone={reloadFolder}
+          onDone={() => {
+            // Se movió fuera de esta carpeta: desaparece de la vista actual al instante.
+            const movedName = activeModal.item.name;
+            setItems((prev) => prev.filter((i) => i.name !== movedName));
+          }}
         />
       )}
 
@@ -354,7 +369,29 @@ export default function Archivos() {
           currentFullPath={fullPathOf(activeModal.item)}
           itemName={activeModal.item.name}
           onClose={() => setActiveModal(null)}
-          onDone={reloadFolder}
+          onDone={(result) => {
+            // Se agrega el archivo nuevo a la lista al instante. El tamaño exacto
+            // se completará recién en la próxima recarga real de la carpeta —
+            // aceptamos esa pequeña imprecisión a cambio de feedback instantáneo.
+            setItems((prev) => [
+              ...prev,
+              {
+                name: result.name,
+                type: "file",
+                size_bytes: null,
+                item_count: null,
+                detected_type: {
+                  mime: result.mime,
+                  category: result.mime.startsWith("image/")
+                    ? "image"
+                    : "document",
+                  suggested_extension: null,
+                },
+                modified_at: new Date().toISOString(),
+                is_protected: false,
+              },
+            ]);
+          }}
         />
       )}
 
