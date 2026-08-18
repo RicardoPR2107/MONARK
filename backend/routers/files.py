@@ -1,7 +1,7 @@
 """
 routers/files.py
 Endpoints del módulo "Gestión de Archivos y Carpetas" (Iteración 1).
-Implementa la documentación definida en el documento consolidado, sección 2.
+Implementa el contrato definido en el documento consolidado, sección 2.
 """
 
 from fastapi import APIRouter, Query
@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import magic
 import shutil
 import os
+import stat as stat_module
 import subprocess
 
 from database import get_connection
@@ -108,15 +109,35 @@ def detect_type(file_path: Path) -> DetectedType | None:
     return DetectedType(mime=mime, category=category, suggested_extension=suggested_extension)
 
 
+def is_reparse_point(path: Path) -> bool:
+    """Detecta puntos de unión (junctions) de Windows, para no entrar en bucle al recorrerlos."""
+    try:
+        attrs = path.stat().st_file_attributes
+        return bool(attrs & stat_module.FILE_ATTRIBUTE_REPARSE_POINT)
+    except (OSError, AttributeError):
+        return False
+
+
 def folder_size(path: Path) -> int:
-    """Suma recursiva del tamaño de todos los archivos dentro de una carpeta."""
+    """Suma recursiva del tamaño de una carpeta, saltando symlinks/junctions para evitar bucles infinitos."""
+    if not path.exists():
+        return 0
     total = 0
-    for f in path.rglob("*"):
-        if f.is_file():
-            try:
-                total += f.stat().st_size
-            except OSError:
-                pass  # archivo inaccesible puntual, se ignora en el conteo
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                try:
+                    entry_path = Path(entry.path)
+                    if entry.is_symlink() or is_reparse_point(entry_path):
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        total += folder_size(entry_path)
+                    elif entry.is_file(follow_symlinks=False):
+                        total += entry.stat().st_size
+                except (OSError, PermissionError):
+                    continue
+    except (PermissionError, OSError):
+        pass
     return total
 
 
@@ -327,21 +348,21 @@ def delete_item(path: str = Query(..., description="Ruta completa del archivo o 
 def move_item(payload: MoveRequest):
     current_path = Path(payload.current_path)
     destination_path = Path(payload.destination_path)
-    
+
     # 1. Validar que el elemento a mover exista
     if not current_path.exists():
         return error_response(404, "PATH_NOT_FOUND", "El archivo o carpeta a mover ya no existe.")
-    
+
     # 2. Validar que el destino exista y sea una carpeta
     if not destination_path.exists():
         return error_response(400, "DESTINATION_NOT_FOUND", "La carpeta destino no existe.")
     if not destination_path.is_dir():
         return error_response(400, "DESTINATION_NOT_A_FOLDER", "El destino indicado no es una carpeta.")
-    
+
     # 3. Validar rutas protegidas (origen y destino)
     if is_protected(str(current_path)) or is_protected(str(destination_path)):
         return error_response(403, "PROTECTED_PATH", "Esta operación involucra una ubicación protegida por el sistema.")
-   
+
     # 4. Caso especial: mover una carpeta dentro de sí misma o de una subcarpeta propia
     if current_path.is_dir():
         same_or_inside = destination_path == current_path
@@ -352,24 +373,24 @@ def move_item(payload: MoveRequest):
             pass
         if same_or_inside:
             return error_response(400, "MOVE_INTO_ITSELF", "No se puede mover una carpeta dentro de sí misma.")
-    
+
     new_path = destination_path / current_path.name
-    
+
     # 5. Validar conflicto de nombre en destino
     if new_path.exists():
         if not payload.overwrite:
             return error_response(400, "NAME_ALREADY_EXISTS", "Ya existe un elemento con ese nombre en la carpeta destino.")
-        # overwriteTrue: se eliminar lo existente en destino antes de mover
+        # overwrite=True: se elimina lo existente en destino antes de mover
         try:
             if new_path.is_dir():
                 shutil.rmtree(new_path)
             else:
                 new_path.unlink()
         except OSError as e:
-            return error_response(500, "OVERWRITE_FAILED", f"No se pudo sobrescribir el elemento existe: {e}")
-    
+            return error_response(500, "OVERWRITE_FAILED", f"No se pudo sobrescribir el elemento existente: {e}")
+
     item_type = "folder" if current_path.is_dir() else "file"
-    
+
     # 6. Mover
     try:
         shutil.move(str(current_path), str(new_path))
@@ -379,7 +400,7 @@ def move_item(payload: MoveRequest):
         return error_response(403, "PERMISSION_DENIED", "Sin permisos suficientes para mover.")
     except OSError as e:
         return error_response(500, "MOVE_FAILED", f"No se pudo mover: {e}")
-    
+
     # 7. Responder éxito
     data = MoveData(
         old_path=str(current_path),
@@ -408,18 +429,18 @@ def build_unique_name(base: str, parent: Path) -> str:
 @router.post("/convert", summary="Convertir archivo")
 def convert_item(payload: ConvertRequest):
     source = Path(payload.current_path)
-    
+
     # 1. Validar que el origen exista y sea un archivo
     if not source.exists() or not source.is_file():
         return error_response(404, "SOURCE_NOT_FOUND", "El archivo origen no existe.")
-    
+
     # 2. Validar rutas protegidas
     if is_protected(str(source)):
         return error_response(403, "PROTECTED_PATH", "Esta ubicación está protegida por el sistema.")
-    
+
     source_mime = magic.from_file(str(source), mime=True)
     target = payload.target_type
-    
+
     # 3. Resolver nombre de salida (siempre se crea un archivo nuevo, nunca se reemplaza el original)
     if payload.new_name:
         if not is_valid_name(payload.new_name):
@@ -427,34 +448,34 @@ def convert_item(payload: ConvertRequest):
         out_name = payload.new_name
     else:
         out_name = build_unique_name(source.stem or source.name, source.parent)
-        
+
     out_path = source.parent / out_name
     if out_path.exists():
-        return error_response(400, "NAME_ALREADY_EXIST", "Ya existe un archivo con ese nombre en esta ubicación.")
-    
+        return error_response(400, "NAME_ALREADY_EXISTS", "Ya existe un archivo con ese nombre en esta ubicación.")
+
     new_mime = None
-    
+
     try:
         # --- Nivel 1: TXT <-> Markdown (mismo contenido, distinta interpretación) ---
         if target == "markdown" and source_mime == "text/plain":
             out_path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
             new_mime = "text/markdown"
-            
+
         elif target == "text_plain" and source_mime in ("text/plain", "text/markdown"):
             out_path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
             new_mime = "text/plain"
-        
-        # --- Nivel 2: Imágenes PNG <-> JPG <-> WEBP (vía Pillow) ---
+
+        # --- Nivel 2: imágenes PNG <-> JPG <-> WEBP (vía Pillow) ---
         elif target in ("png", "jpg", "webp") and source_mime in ("image/png", "image/jpeg", "image/webp"):
             from PIL import Image
             img = Image.open(source)
             fmt_map = {"png": "PNG", "jpg": "JPEG", "webp": "WEBP"}
             if target == "jpg" and img.mode in ("RGBA", "P"):
-                img = img.convert("RGB") # JPEG no soporta transparencia
+                img = img.convert("RGB")  # JPEG no soporta transparencia
             img.save(out_path, fmt_map[target])
             new_mime = "image/jpeg" if target == "jpg" else f"image/{target}"
-        
-        # --- Nivel 2: TXT -> PDF (vía reportLab, sin dependencias externas) ---
+
+        # --- Nivel 2: TXT -> PDF (vía reportlab, sin dependencias externas) ---
         elif target == "pdf" and source_mime == "text/plain":
             from reportlab.lib.pagesizes import letter
             from reportlab.pdfgen import canvas
@@ -468,7 +489,7 @@ def convert_item(payload: ConvertRequest):
                     y = 750
             c.save()
             new_mime = "application/pdf"
-            
+
         # --- Nivel 2: DOCX -> PDF (vía Pandoc, requiere instalación aparte del sistema) ---
         elif target == "pdf" and source_mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
             result = subprocess.run(
@@ -481,19 +502,19 @@ def convert_item(payload: ConvertRequest):
                     "No se pudo convertir con Pandoc. Verifica que esté instalado en el sistema."
                 )
             new_mime = "application/pdf"
-        
+
         else:
             return error_response(
                 400, "UNSUPPORTED_CONVERSION",
                 f"La conversión de '{source_mime}' a '{target}' no está soportada en esta iteración."
             )
-            
+
     except FileNotFoundError:
-        # Ocurre el 'pandoc' no está instalado en el sistema (no encontró el ejecutable)
+        # Ocurre si 'pandoc' no está instalado en el sistema (no encontró el ejecutable)
         return error_response(500, "CONVERSION_FAILED", "Pandoc no está instalado en el sistema.")
     except Exception as e:
         return error_response(500, "CONVERSION_FAILED", f"No se pudo convertir el archivo: {e}")
-    
+
     # 4. Responder éxito
     data = ConvertData(
         original_path=str(source),
@@ -504,8 +525,8 @@ def convert_item(payload: ConvertRequest):
     )
     body = APIResponse(success=True, data=data.model_dump())
     return JSONResponse(status_code=200, content=body.model_dump())
-    
-    
+
+
 # ---------------------------------------------------------------------------
 # 2.7 — Listar contenido de una carpeta
 # ---------------------------------------------------------------------------
@@ -513,35 +534,35 @@ def convert_item(payload: ConvertRequest):
 @router.get("/list", summary="Listar contenido de una carpeta")
 def list_folder(path: str = Query(..., description="Ruta de la carpeta a listar")):
     target = Path(path)
-    
+
     # 1. Validar que exista y sea carpeta
     if not target.exists():
         return error_response(404, "PATH_NOT_FOUND", "La ruta no existe.")
     if not target.is_dir():
         return error_response(400, "NOT_A_FOLDER", "La ruta indicada no es una carpeta.")
-    
+
     try:
         entries = list(target.iterdir())
     except PermissionError:
         return error_response(403, "PERMISSION_DENIED", "Sin permisos para leer esta carpeta.")
-    
+
     items = []
     for entry in entries:
         try:
             stat = entry.stat()
             modified_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             protected = is_protected(str(entry))
-        
+
             if entry.is_dir():
-                # Calculo inmediato, sin caché
+                # Cálculo inmediato, sin caché (Opción A, decidida para Iteración 1)
                 size = folder_size(entry)
                 try:
-                    intem_count = sum(1 for _ in entry.iterdir())
+                    item_count = sum(1 for _ in entry.iterdir())
                 except PermissionError:
-                    intem_count = 0
+                    item_count = 0
                 items.append(FileListItem(
                     name=entry.name, type="folder", size_bytes=size,
-                    item_count=intem_count, detected_type=None,
+                    item_count=item_count, detected_type=None,
                     modified_at=modified_at, is_protected=protected
                 ))
             else:
@@ -554,11 +575,45 @@ def list_folder(path: str = Query(..., description="Ruta de la carpeta a listar"
         except (PermissionError, OSError):
             # Elemento puntual inaccesible (ej. archivo bloqueado por otro proceso): se omite, no rompe el listado completo
             continue
-        
+
     data = ListFolderData(
         current_path=str(target),
         total_items=len(items),
         items=items
     )
     body = APIResponse(success=True, data=data.model_dump())
+    return JSONResponse(status_code=200, content=body.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# Papelera — SOLO LECTURA en Iteración 1.
+# Restaurar (POST /trash/restore) y purgar (DELETE /trash/purge) quedan
+# explícitamente para Iteración 2, tal como se definió en el contrato.
+# Este endpoint adelantado es el mínimo necesario para que la pantalla de
+# Papelera pueda mostrar qué hay ahí, sin poder todavía actuar sobre ello.
+# ---------------------------------------------------------------------------
+
+@router.get("/trash", summary="Ver contenido de la papelera (solo lectura)")
+def list_trash():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM trash_items ORDER BY deleted_at DESC")
+    rows = cursor.fetchall()
+    conn.close()
+
+    items = [
+        {
+            "id": row["id"],
+            "original_path": row["original_path"],
+            "trash_path": row["trash_path"],
+            "name": row["name"],
+            "type": row["type"],
+            "size_bytes": row["size_bytes"],
+            "deleted_at": row["deleted_at"],
+        }
+        for row in rows
+    ]
+
+    data = {"total_items": len(items), "items": items}
+    body = APIResponse(success=True, data=data)
     return JSONResponse(status_code=200, content=body.model_dump())

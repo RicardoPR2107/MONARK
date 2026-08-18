@@ -5,6 +5,7 @@ import Dashboard from "./pages/Dashboard";
 import Archivos from "./pages/Archivos";
 import Hardware from "./pages/Hardware";
 import Red from "./pages/Red";
+import Papelera from "./pages/Papelera";
 import "./App.css";
 
 function App() {
@@ -15,7 +16,7 @@ function App() {
         <Route path="/archivos" element={<Archivos />} />
         <Route path="/hardware" element={<Hardware />} />
         <Route path="/red" element={<Red />} />
-        {/* Próxima ruta: /papelera */}
+        <Route path="/papelera" element={<Papelera />} />
       </Routes>
     </HashRouter>
   );
