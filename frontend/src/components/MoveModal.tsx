@@ -1,11 +1,14 @@
 // src/components/MoveModal.tsx
-// LIMITACIÓN ACTUAL: el destino se escribe como texto (ruta completa), no hay
-// todavía un explorador visual de carpetas para elegir destino haciendo clic.
-// Es funcional, pero menos cómodo que "arrastrar y soltar" — queda anotado
-// como mejora posible para más adelante (un selector de carpetas tipo árbol).
+// Selector visual de carpeta destino: navegas igual que en la pantalla de
+// Archivos (Este equipo -> unidad -> carpetas), en vez de escribir la ruta
+// a mano. Solo muestra carpetas (no archivos), porque solo puedes mover
+// algo DENTRO de una carpeta.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { moveItem } from "../api/files";
+import { getDiskList, DriveInfo } from "../api/disk";
+import { listFolder, FileListItem } from "../api/files";
+import { FolderIcon, ChipIcon } from "./icons";
 
 interface Props {
   currentFullPath: string;
@@ -20,16 +23,38 @@ export default function MoveModal({
   onClose,
   onDone,
 }: Props) {
-  const [destination, setDestination] = useState("");
+  // browsePath === null representa "Este equipo" (lista de unidades)
+  const [browsePath, setBrowsePath] = useState<string | null>(null);
+  const [drives, setDrives] = useState<DriveInfo[]>([]);
+  const [folders, setFolders] = useState<FileListItem[]>([]);
+  const [loadingList, setLoadingList] = useState(true);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [needsOverwriteConfirm, setNeedsOverwriteConfirm] = useState(false);
 
+  useEffect(() => {
+    setLoadingList(true);
+    if (browsePath === null) {
+      getDiskList().then((res) => {
+        if (res.success && res.data) setDrives(res.data.drives);
+        setLoadingList(false);
+      });
+    } else {
+      listFolder(browsePath).then((res) => {
+        if (res.success && res.data) {
+          setFolders(res.data.items.filter((i) => i.type === "folder"));
+        }
+        setLoadingList(false);
+      });
+    }
+  }, [browsePath]);
+
   async function handleMove(overwrite: boolean = false) {
-    if (!destination.trim()) return;
+    if (browsePath === null) return; // no puedes mover algo directo a "Este equipo"
     setLoading(true);
     setError("");
-    const res = await moveItem(currentFullPath, destination.trim(), overwrite);
+    const res = await moveItem(currentFullPath, browsePath, overwrite);
     setLoading(false);
 
     if (res.success) {
@@ -42,30 +67,98 @@ export default function MoveModal({
     }
   }
 
+  const segments = browsePath ? browsePath.split("/").filter(Boolean) : [];
+
   return (
     <div
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
       onClick={onClose}
     >
       <div
-        className="bg-surface rounded-2xl p-6 w-96 flex flex-col gap-4"
+        className="bg-surface rounded-2xl p-6 w-120 flex flex-col gap-4"
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-lg font-bold text-text-primary">
           Mover "{itemName}"
         </h2>
 
-        <p className="text-xs text-text-secondary">
-          Ruta completa de la carpeta destino (ej. D:/MONARK/Proyectos)
-        </p>
+        {/* Breadcrumb de navegación */}
+        <div className="flex items-center gap-1 text-sm flex-wrap bg-white/5 rounded-lg px-3 py-2">
+          <button
+            onClick={() => setBrowsePath(null)}
+            className={
+              browsePath === null
+                ? "text-text-primary font-medium"
+                : "text-text-secondary hover:text-text-primary"
+            }
+          >
+            Este equipo
+          </button>
+          {segments.map((seg, i) => {
+            const pathUpToHere = segments.slice(0, i + 1).join("/") + "/";
+            const isLast = i === segments.length - 1;
+            return (
+              <span key={i} className="flex items-center gap-1">
+                <span className="text-text-secondary">›</span>
+                <button
+                  onClick={() => setBrowsePath(pathUpToHere)}
+                  className={
+                    isLast
+                      ? "text-text-primary font-medium"
+                      : "text-text-secondary hover:text-text-primary"
+                  }
+                >
+                  {seg}
+                </button>
+              </span>
+            );
+          })}
+        </div>
 
-        <input
-          autoFocus
-          value={destination}
-          onChange={(e) => setDestination(e.target.value)}
-          placeholder="D:/carpeta/destino"
-          className="bg-white/5 text-text-primary rounded-lg px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-accent"
-        />
+        {/* Lista navegable */}
+        <div className="h-56 overflow-y-auto flex flex-col gap-1 bg-white/5 rounded-lg p-2">
+          {loadingList && (
+            <span className="text-text-secondary text-xs px-2 py-1">
+              Cargando...
+            </span>
+          )}
+
+          {!loadingList &&
+            browsePath === null &&
+            drives.map((d) => (
+              <button
+                key={d.letter}
+                onClick={() => setBrowsePath(`${d.letter}/`)}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left hover:bg-white/5"
+              >
+                <ChipIcon className="w-4 h-4 text-accent shrink-0" />
+                Unidad {d.letter}
+              </button>
+            ))}
+
+          {!loadingList && browsePath !== null && folders.length === 0 && (
+            <span className="text-text-secondary text-xs px-3 py-2">
+              No hay subcarpetas aquí.
+            </span>
+          )}
+
+          {!loadingList &&
+            browsePath !== null &&
+            folders.map((f) => (
+              <button
+                key={f.name}
+                onClick={() =>
+                  setBrowsePath(
+                    `${browsePath}${browsePath.endsWith("/") ? "" : "/"}${f.name}`,
+                  )
+                }
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left hover:bg-white/5"
+              >
+                <FolderIcon className="w-4 h-4 text-accent shrink-0" />
+                {f.name}
+              </button>
+            ))}
+        </div>
 
         {error && <span className="text-red-400 text-xs">{error}</span>}
 
@@ -92,7 +185,7 @@ export default function MoveModal({
         )}
 
         {!needsOverwriteConfirm && (
-          <div className="flex justify-end gap-3 mt-1">
+          <div className="flex justify-end gap-3">
             <button
               onClick={onClose}
               className="px-4 py-2 rounded-lg text-sm text-text-secondary hover:bg-white/5"
@@ -101,10 +194,10 @@ export default function MoveModal({
             </button>
             <button
               onClick={() => handleMove(false)}
-              disabled={loading || !destination.trim()}
+              disabled={loading || browsePath === null}
               className="px-4 py-2 rounded-lg text-sm font-medium bg-accent text-text-primary disabled:opacity-50"
             >
-              {loading ? "Moviendo..." : "Mover"}
+              {loading ? "Moviendo..." : "Mover aquí"}
             </button>
           </div>
         )}

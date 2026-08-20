@@ -4,7 +4,7 @@ Endpoints del módulo "Gestión de Archivos y Carpetas" (Iteración 1).
 Implementa el contrato definido en el documento consolidado, sección 2.
 """
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pathlib import Path
 from datetime import datetime, timezone
@@ -110,9 +110,16 @@ def detect_type(file_path: Path) -> DetectedType | None:
 
 
 def is_reparse_point(path: Path) -> bool:
-    """Detecta puntos de unión (junctions) de Windows, para no entrar en bucle al recorrerlos."""
+    """
+    Detecta puntos de unión (junctions) de Windows, para no entrar en bucle al recorrerlos.
+    IMPORTANTE: se usa lstat() y no stat() — stat() sigue el junction y termina
+    devolviendo los atributos de a dónde apunta, no del junction en sí, lo que
+    hacía que esta función nunca detectara nada de verdad (bug real, causaba
+    bucles infinitos al recorrer C:, que tiene varios junctions de compatibilidad
+    que D: normalmente no tiene).
+    """
     try:
-        attrs = path.stat().st_file_attributes
+        attrs = path.lstat().st_file_attributes
         return bool(attrs & stat_module.FILE_ATTRIBUTE_REPARSE_POINT)
     except (OSError, AttributeError):
         return False
@@ -528,11 +535,67 @@ def convert_item(payload: ConvertRequest):
 
 
 # ---------------------------------------------------------------------------
+# Caché de tamaño de carpetas (mejora adelantada desde Iteración 2, sección
+# 2.7 del contrato). Invalidación por fecha de modificación de la CARPETA
+# MISMA — no detecta cambios varios niveles más abajo hasta que se vuelva a
+# entrar a esa subcarpeta directamente. Trade-off aceptado conscientemente.
+# ---------------------------------------------------------------------------
+
+def get_cached_folder_size(folder_path: str, current_mtime: str):
+    """Devuelve (size_bytes, item_count) si hay caché válido para esa carpeta
+    con esa fecha de modificación exacta; None si no hay caché o está vencido."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT size_bytes, item_count, folder_mtime FROM folder_size_cache WHERE folder_path = ?",
+        (folder_path,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row and row["folder_mtime"] == current_mtime:
+        return row["size_bytes"], row["item_count"]
+    return None
+
+
+def save_folder_size_cache(folder_path: str, size_bytes: int, item_count: int, folder_mtime: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """INSERT INTO folder_size_cache (folder_path, size_bytes, item_count, folder_mtime, cached_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(folder_path) DO UPDATE SET
+             size_bytes = excluded.size_bytes,
+             item_count = excluded.item_count,
+             folder_mtime = excluded.folder_mtime,
+             cached_at = excluded.cached_at""",
+        (folder_path, size_bytes, item_count, folder_mtime, now_iso())
+    )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# 2.7 — Listar contenido de una carpeta
+# ---------------------------------------------------------------------------
+
+def compute_and_cache_folder_size(entry_path_str: str, folder_mtime: str):
+    """Se ejecuta en segundo plano, sin bloquear la respuesta del listado.
+    Calcula el tamaño real (recursivo) y lo guarda en caché para la próxima vez."""
+    entry_path = Path(entry_path_str)
+    size = folder_size(entry_path)
+    try:
+        item_count = sum(1 for _ in entry_path.iterdir())
+    except (PermissionError, OSError):
+        item_count = 0
+    save_folder_size_cache(entry_path_str, size, item_count, folder_mtime)
+
+
+# ---------------------------------------------------------------------------
 # 2.7 — Listar contenido de una carpeta
 # ---------------------------------------------------------------------------
 
 @router.get("/list", summary="Listar contenido de una carpeta")
-def list_folder(path: str = Query(..., description="Ruta de la carpeta a listar")):
+def list_folder(background_tasks: BackgroundTasks, path: str = Query(..., description="Ruta de la carpeta a listar")):
     target = Path(path)
 
     # 1. Validar que exista y sea carpeta
@@ -554,12 +617,23 @@ def list_folder(path: str = Query(..., description="Ruta de la carpeta a listar"
             protected = is_protected(str(entry))
 
             if entry.is_dir():
-                # Cálculo inmediato, sin caché (Opción A, decidida para Iteración 1)
-                size = folder_size(entry)
-                try:
-                    item_count = sum(1 for _ in entry.iterdir())
-                except PermissionError:
-                    item_count = 0
+                folder_mtime = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                cached = get_cached_folder_size(str(entry), folder_mtime)
+
+                if cached is not None:
+                    # Hay caché válido: instantáneo, sin tocar el disco.
+                    size, item_count = cached
+                else:
+                    # No hay caché: NUNCA calculamos aquí de forma bloqueante.
+                    # Respondemos sin tamaño todavía, y lo calculamos aparte,
+                    # en segundo plano — igual que el análisis de disco completo.
+                    size = None
+                    try:
+                        item_count = sum(1 for _ in entry.iterdir())  # esto sí es barato: un solo nivel
+                    except (PermissionError, OSError):
+                        item_count = 0
+                    background_tasks.add_task(compute_and_cache_folder_size, str(entry), folder_mtime)
+
                 items.append(FileListItem(
                     name=entry.name, type="folder", size_bytes=size,
                     item_count=item_count, detected_type=None,
